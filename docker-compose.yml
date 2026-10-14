@@ -1,0 +1,61 @@
+# Deploy gophish lên Coolify.
+#
+# - Admin UI (port 3333) và Phishing server (port 80) được Coolify/Traefik
+#   expose ra ngoài qua HTTPS (Let's Encrypt). gophish chạy HTTP nội bộ.
+# - Database dùng MySQL 8, persist qua named volume `gophish-db`.
+# - Điền các biến trong Coolify (hoặc file .env) theo .env.example.
+#
+# Trong Coolify: gán domain cho service `gophish` (port 3333 = admin, 80 = phish)
+# ở phần "Domains". Magic env SERVICE_FQDN_* bên dưới giúp Coolify tự cấu hình
+# Traefik + cấp cert.
+
+services:
+  gophish:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # Coolify magic vars: tự sinh domain + route Traefik cho 2 cổng.
+      - SERVICE_FQDN_ADMIN_3333
+      - SERVICE_FQDN_PHISH_80
+      # Admin server: chạy HTTP, để Traefik terminate TLS.
+      - ADMIN_LISTEN_URL=0.0.0.0:3333
+      - ADMIN_USE_TLS=false
+      # Domain admin thuần (không kèm scheme) cho CSRF trusted origins.
+      # Set bằng domain bạn gán cho admin UI, vd: gophish.example.com
+      - ADMIN_TRUSTED_ORIGINS=${ADMIN_DOMAIN}
+      # Phishing server: chạy HTTP, Traefik terminate TLS.
+      - PHISH_LISTEN_URL=0.0.0.0:80
+      - PHISH_USE_TLS=false
+      - CONTACT_ADDRESS=${CONTACT_ADDRESS}
+      # MySQL: db_path = DSN cho gorm.
+      - DB_NAME=mysql
+      - DB_FILE_PATH=gophish:${MYSQL_PASSWORD}@(db:3306)/gophish?charset=utf8mb4&parseTime=True&loc=Local
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "3333"
+      - "80"
+
+  db:
+    image: mysql:8.0
+    restart: unless-stopped
+    command: --default-authentication-plugin=mysql_native_password
+    environment:
+      - MYSQL_ROOT_PASSWORD=${MYSQL_ROOT_PASSWORD}
+      - MYSQL_DATABASE=gophish
+      - MYSQL_USER=gophish
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+    volumes:
+      - gophish-db:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  gophish-db:
